@@ -302,6 +302,15 @@ VIMAX_WEB_PORT=4174 npm run dev
 <details>
 <summary><strong>Usage</strong></summary>
 
+**Image Selection**
+
+ViMax generates 2 keyframe candidates in parallel and selects one using your vision-capable chat model. This can improve visual quality and consistency, at a higher API cost. Set in your YAML config:
+
+```yaml
+image_selection:
+  num_candidates: 2 # Set to 1 to disable selection.
+```
+
 main_idea2video.py is used to convert your ideas into videos.
 You need to configure the model and API key information in the configs/idea2video.yaml file, including three parts—the chat model, the image generator, and the video generator, as shown below
 ```yaml

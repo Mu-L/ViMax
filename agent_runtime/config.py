@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from utils.image_selection import image_candidate_count_from_config
 
 DEFAULT_LLM_MODEL = "gpt-5.5"
 DEFAULT_LLM_MODEL_PROVIDER = "openai"
@@ -72,6 +73,10 @@ def image_base_url(workspace_root: str | Path = ".") -> str:
 
 def image_api_key(workspace_root: str | Path = ".") -> str:
     return config_value("image", "api_key", ["VIMAX_IMAGE_API_KEY", "VIMAX_LLM_API_KEY", "VIMAX_API_KEY"], llm_api_key(workspace_root), workspace_root)
+
+
+def image_num_candidates(workspace_root: str | Path = ".") -> int:
+    return image_candidate_count_from_config(load_agent_config(workspace_root))
 
 
 

@@ -268,12 +268,14 @@ class NovelAdapterTests(unittest.IsolatedAsyncioTestCase):
             adapter = ViMaxAdapters(Path(tmp), index)
             progress_events = []
             runtime = ToolRuntimeContext("vimax_render_video", "vimax_render_video", turn_id="turn-test", progress_callback=progress_events.append)
-            with patch("agent_runtime.vimax_adapters._build_chat_model", return_value=object()), \
+            with patch.dict("os.environ", {"VIMAX_IMAGE_NUM_CANDIDATES": "3"}), \
+                 patch("agent_runtime.vimax_adapters._build_chat_model", return_value=object()), \
                  patch("agent_runtime.vimax_adapters._build_image_generator", return_value=object()), \
                  patch("agent_runtime.vimax_adapters._build_video_generator", return_value=object()), \
-                 patch("agent_runtime.vimax_adapters._build_novel_render_pipeline", side_effect=lambda working_dir, chat_model, image_generator, video_generator: FakeNovelRenderPipeline(Path(working_dir))):
+                 patch("agent_runtime.vimax_adapters._build_novel_render_pipeline", side_effect=lambda working_dir, chat_model, image_generator, video_generator, num_image_candidates=2: FakeNovelRenderPipeline(Path(working_dir))) as factory:
                 result = await adapter.vimax_render_video({}, runtime)
             self.assertTrue(result.ok)
+            self.assertEqual(factory.call_args.kwargs["num_image_candidates"], 3)
             payload = json.loads(result.content)
             self.assertEqual(payload["render_mode"], "novel2video")
             self.assertTrue(payload["scene_render_completed"])

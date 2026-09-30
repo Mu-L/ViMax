@@ -12,6 +12,11 @@ image:
   base_url: <YOUR_IMAGE_BASE_URL>
   api_key: ''
 
+# Keyframes: generate candidates concurrently and compare with the configured LLM.
+# Set to 1 to generate one image without VLM selection. The LLM must support vision.
+image_selection:
+  num_candidates: 2
+
 video:
   model: <YOUR_VIDEO_MODEL>
   base_url: <YOUR_VIDEO_BASE_URL>

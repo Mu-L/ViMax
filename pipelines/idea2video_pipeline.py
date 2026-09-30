@@ -2,9 +2,9 @@ import os
 import shutil
 import logging
 from agents import Screenwriter, CharacterExtractor, CharacterPortraitsGenerator
-from pipelines.script2video_pipeline import Script2VideoPipeline
+from pipelines.script2video_pipeline import Script2VideoPipeline, _scoped_progress
 from interfaces import CharacterInScene
-from typing import List, Dict, Optional
+from typing import Any, Callable, List, Dict, Optional
 import asyncio
 import json
 import yaml
@@ -13,6 +13,7 @@ from tools.render_backend import RenderBackend
 from utils.provider_presets import resolve_chat_model_config
 from utils.text import safe_path_component
 from utils.video import concatenate_video_files
+from utils.image_selection import DEFAULT_IMAGE_CANDIDATES, image_candidate_count_from_config, validate_image_candidate_count
 
 
 def _pipeline_print(quiet: bool, message: str) -> None:
@@ -27,10 +28,12 @@ class Idea2VideoPipeline:
         image_generator: str,
         video_generator: str,
         working_dir: str,
+        num_image_candidates: int = DEFAULT_IMAGE_CANDIDATES,
     ):
         self.chat_model = chat_model
         self.image_generator = image_generator
         self.video_generator = video_generator
+        self.num_image_candidates = validate_image_candidate_count(num_image_candidates)
         self.working_dir = working_dir
         os.makedirs(self.working_dir, exist_ok=True)
 
@@ -54,6 +57,7 @@ class Idea2VideoPipeline:
             image_generator=backend.image_generator,
             video_generator=backend.video_generator,
             working_dir=config["working_dir"],
+            num_image_candidates=image_candidate_count_from_config(config),
         )
 
     async def extract_characters(
@@ -226,6 +230,7 @@ class Idea2VideoPipeline:
         user_requirement: str,
         style: str,
         quiet: bool = False,
+        progress: Callable[[str, str, Dict[str, Any] | None], None] | None = None,
     ):
 
         story = await self.develop_story(idea=idea, user_requirement=user_requirement, quiet=quiet)
@@ -250,6 +255,7 @@ class Idea2VideoPipeline:
                 image_generator=self.image_generator,
                 video_generator=self.video_generator,
                 working_dir=scene_working_dir,
+                num_image_candidates=self.num_image_candidates,
             )
             final_video_path = await script2video_pipeline(
                 script=scene_script,
@@ -258,6 +264,7 @@ class Idea2VideoPipeline:
                 characters=characters,
                 character_portraits_registry=character_portraits_registry,
                 quiet=quiet,
+                progress=_scoped_progress(progress, scene_idx=idx),
             )
             all_video_paths.append(final_video_path)
 

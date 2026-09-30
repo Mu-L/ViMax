@@ -29,6 +29,8 @@ from tools.video_generator_veo_yunwu_api import VideoGeneratorVeoYunwuAPI
 
 from .config import api_provider_from_base_url, embedding_api_key, embedding_base_url, embedding_model, embedding_model_provider, image_api_key, image_base_url, image_model, llm_api_key, llm_base_url, llm_model, llm_model_provider, reranker_api_key, reranker_base_url, reranker_model, video_api_key, video_base_url, video_model, video_provider
 from .models import ToolResult
+from .config import image_num_candidates
+from utils.image_selection import DEFAULT_IMAGE_CANDIDATES
 from .tools import ToolArgumentSchema, ToolRuntimeContext, ToolSpec
 
 
@@ -355,12 +357,13 @@ class ViMaxAdapters:
             chat_model = _build_chat_model()
             image_generator = _build_image_generator()
             video_generator = _build_video_generator()
+            num_image_candidates = image_num_candidates(self.workspace_root)
             if runtime:
                 runtime.emit_progress("Starting video render", stage="rendering", metadata={"session_id": session_id})
             if _idea_mode_ready(checklist):
-                idea_pipeline = Idea2VideoPipeline(chat_model=chat_model, image_generator=image_generator, video_generator=video_generator, working_dir=str(working_dir / "idea2video"))
+                idea_pipeline = Idea2VideoPipeline(chat_model=chat_model, image_generator=image_generator, video_generator=video_generator, working_dir=str(working_dir / "idea2video"), num_image_candidates=num_image_candidates)
                 with _suppress_pipeline_output():
-                    final_video = await idea_pipeline(idea=str(session.get("idea", "")), user_requirement=str(session.get("user_requirement", "")), style=str(session.get("style", "")), quiet=True)
+                    final_video = await idea_pipeline(idea=str(session.get("idea", "")), user_requirement=str(session.get("user_requirement", "")), style=str(session.get("style", "")), quiet=True, progress=_pipeline_progress(runtime, session_id))
                 self.session_index.update_stage(session_id, "rendered", "Final video rendered")
                 payload = {"session_id": session_id, "render_mode": "idea2video", "render_started": True, "render_completed": True, "final_video_path": str(Path(final_video).relative_to(self.workspace_root)), "missing": []}
                 _write_render_status(working_dir, status="rendered", payload=payload)
@@ -369,7 +372,7 @@ class ViMaxAdapters:
                 script_dir = working_dir / "script2video"
                 script_text = _load_script_text(working_dir)
                 characters = _load_characters(script_dir / "characters.json")
-                pipeline = Script2VideoPipeline(chat_model=chat_model, image_generator=image_generator, video_generator=video_generator, working_dir=str(script_dir))
+                pipeline = Script2VideoPipeline(chat_model=chat_model, image_generator=image_generator, video_generator=video_generator, working_dir=str(script_dir), num_image_candidates=num_image_candidates)
                 with _suppress_pipeline_output():
                     final_video = await pipeline(script=script_text, user_requirement=str(session.get("user_requirement", "")), style=str(session.get("style", "")), characters=characters, quiet=True, progress=_pipeline_progress(runtime, session_id))
                 self.session_index.update_stage(session_id, "rendered", "Final video rendered")
@@ -378,7 +381,7 @@ class ViMaxAdapters:
                 return ToolResult("vimax_render_video", True, json.dumps(payload, ensure_ascii=False, indent=2), payload)
             if _novel_mode_ready(checklist):
                 novel_dir = working_dir / "novel2video"
-                pipeline = _build_novel_render_pipeline(novel_dir, chat_model, image_generator, video_generator)
+                pipeline = _build_novel_render_pipeline(novel_dir, chat_model, image_generator, video_generator, num_image_candidates=num_image_candidates)
                 with _suppress_pipeline_output():
                     render_result = await pipeline.render_video_artifacts(style=str(session.get("style", "")), user_requirement=str(session.get("user_requirement", "")), quiet=True, progress=_pipeline_progress(runtime, session_id))
                 scene_videos_dir = Path(render_result["scene_videos_dir"])
@@ -641,13 +644,13 @@ def _build_novel_pipeline(working_dir: Path) -> Novel2MoviePipeline:
     )
 
 
-def _build_novel_render_pipeline(working_dir: Path, chat_model: Any, image_generator: Any, video_generator: Any) -> Novel2MoviePipeline:
+def _build_novel_render_pipeline(working_dir: Path, chat_model: Any, image_generator: Any, video_generator: Any, num_image_candidates: int = DEFAULT_IMAGE_CANDIDATES) -> Novel2MoviePipeline:
     api_key = llm_api_key()
     if not api_key:
         raise RuntimeError("VIMAX_LLM_API_KEY or configs/agent.local.yaml llm.api_key is required for novel rendering")
     base_url = llm_base_url()
     model = llm_model()
-    script_pipeline = Script2VideoPipeline(chat_model=chat_model, image_generator=image_generator, video_generator=video_generator, working_dir=str(working_dir / "videos"))
+    script_pipeline = Script2VideoPipeline(chat_model=chat_model, image_generator=image_generator, video_generator=video_generator, working_dir=str(working_dir / "videos"), num_image_candidates=num_image_candidates)
     return Novel2MoviePipeline(
         novel_compressor=NovelCompressor(api_key=api_key, base_url=base_url, chat_model=model),
         event_extractor=EventExtractor(api_key=api_key, base_url=base_url, chat_model=model),

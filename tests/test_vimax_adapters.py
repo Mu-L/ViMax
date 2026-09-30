@@ -17,7 +17,8 @@ from pipelines.script2video_pipeline import Script2VideoPipeline
 
 
 class FakeIdeaPipeline:
-    def __init__(self, chat_model, image_generator, video_generator, working_dir):
+    def __init__(self, chat_model, image_generator, video_generator, working_dir, num_image_candidates=2):
+        self.num_image_candidates = num_image_candidates
         self.working_dir = Path(working_dir)
         self.working_dir.mkdir(parents=True, exist_ok=True)
 
@@ -52,17 +53,17 @@ class FakeRevisionModel:
 
 
 class FailRenderIdeaPipeline(FakeIdeaPipeline):
-    async def __call__(self, idea, user_requirement, style, quiet=False):
+    async def __call__(self, idea, user_requirement, style, quiet=False, progress=None):
         raise RuntimeError("render failed")
 
 
 class FailRender403IdeaPipeline(FakeIdeaPipeline):
-    async def __call__(self, idea, user_requirement, style, quiet=False):
+    async def __call__(self, idea, user_requirement, style, quiet=False, progress=None):
         raise RuntimeError("OpenRouter video create failed with HTTP 403: {'error': {'message': 'Key limit exceeded (total limit). Manage it using token sk-short', 'code': 403}}")
 
 
 class NoisyRenderIdeaPipeline(FakeIdeaPipeline):
-    async def __call__(self, idea, user_requirement, style, quiet=False):
+    async def __call__(self, idea, user_requirement, style, quiet=False, progress=None):
         print("NOISE_FROM_RENDER_PIPELINE")
         final = self.working_dir / "final_video.mp4"
         final.write_text("video", encoding="utf-8")
@@ -70,7 +71,8 @@ class NoisyRenderIdeaPipeline(FakeIdeaPipeline):
 
 
 class FakeScriptPipeline:
-    def __init__(self, chat_model, image_generator, video_generator, working_dir):
+    def __init__(self, chat_model, image_generator, video_generator, working_dir, num_image_candidates=2):
+        self.num_image_candidates = num_image_candidates
         self.working_dir = Path(working_dir)
         self.working_dir.mkdir(parents=True, exist_ok=True)
 

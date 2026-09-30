@@ -265,6 +265,15 @@ VIMAX_WEB_PORT=4174 npm run dev
 <details>
 <summary><strong>Usage</strong></summary>
 
+**图像筛选**
+
+默认并发生成 2 张关键帧候选图，由支持视觉输入的聊天模型二选一，有助于提升画面质量与一致性，但 API 开销更高。在 YAML 配置中设置：
+
+```yaml
+image_selection:
+  num_candidates: 2 # 设为 1 关闭筛选。
+```
+
 main_idea2video.py is used to convert your ideas into videos.
 You need to configure the model and API key information in the configs/idea2video.yaml file, including three parts—the chat model, the image generator, and the video generator, as shown below
 ```yaml

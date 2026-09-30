@@ -4,15 +4,20 @@ import json
 import logging
 import asyncio
 import time
+import hashlib
+from pathlib import Path
+from uuid import uuid4
 from typing import Any, Callable, Optional, Dict, List, Tuple, Literal, Type, TypeVar
 from moviepy import VideoFileClip, concatenate_videoclips
 from PIL import Image
 from agents import *
+from agents.best_image_selector import BestImageSelector
 import yaml
 from interfaces import *
 from langchain.chat_models import init_chat_model
 from tools.render_backend import RenderBackend
 from utils.provider_presets import resolve_chat_model_config
+from utils.image_selection import DEFAULT_IMAGE_CANDIDATES, image_candidate_count_from_config, validate_image_candidate_count
 
 
 
@@ -86,11 +91,14 @@ class Script2VideoPipeline:
         image_generator,
         video_generator,
         working_dir: str,
+        num_image_candidates: int = DEFAULT_IMAGE_CANDIDATES,
     ):
 
         self.chat_model = chat_model
         self.image_generator = image_generator
         self.video_generator = video_generator
+        self.num_image_candidates = validate_image_candidate_count(num_image_candidates)
+        self.best_image_selector = BestImageSelector(chat_model=self.chat_model)
 
         self.character_extractor = CharacterExtractor(chat_model=self.chat_model)
         self.character_portraits_generator = CharacterPortraitsGenerator(image_generator=self.image_generator)
@@ -190,6 +198,7 @@ class Script2VideoPipeline:
             image_generator=backend.image_generator,
             video_generator=backend.video_generator,
             working_dir=config["working_dir"],
+            num_image_candidates=image_candidate_count_from_config(config),
         )
 
     async def __call__(
@@ -421,10 +430,14 @@ class Script2VideoPipeline:
                     prefix_prompt += f"Image {i}: {text}\n"
                 prompt = f"{prefix_prompt}\n{prompt}"
                 reference_image_paths = [item[0] for item in reference_image_path_and_text_pairs]
-                ff_image: ImageOutput = await self.image_generator.generate_single_image(
+                ff_image: ImageOutput = await self.generate_and_select_best_image(
                     prompt=prompt,
                     reference_image_paths=reference_image_paths,
+                    reference_image_path_and_text_pairs=reference_image_path_and_text_pairs,
+                    target_description=shot_descriptions[first_shot_idx].ff_desc,
                     size="1600x900",
+                    candidates_save_dir=os.path.join(self.working_dir, "shots", str(first_shot_idx), "first_frame_candidates"),
+                    progress=_scoped_progress(progress, camera_idx=camera.idx, shot_idx=first_shot_idx, frame_type="first_frame"),
                 )
                 ff_image.save(first_shot_ff_path)
                 self.frame_events[first_shot_idx]["first_frame"].set()
@@ -519,6 +532,133 @@ class Script2VideoPipeline:
             print(f"☑️ Generated video for shot {shot_description.idx}, saved to {video_path}.")
             _emit_render_progress(progress, "video_clip_done", f"Generated video clip for shot {shot_description.idx}", {"shot_idx": shot_description.idx, "path": video_path})
 
+    async def generate_and_select_best_image(
+        self,
+        prompt: str,
+        reference_image_paths: List[str],
+        reference_image_path_and_text_pairs: List[Tuple[str, str]],
+        target_description: str,
+        size: str = "1600x900",
+        num_candidates: int | None = None,
+        candidates_save_dir: str | None = None,
+        progress: Callable[[str, str, Dict[str, Any] | None], None] | None = None,
+    ) -> ImageOutput:
+        count = validate_image_candidate_count(self.num_image_candidates if num_candidates is None else num_candidates)
+        if count == 1:
+            return await self.image_generator.generate_single_image(
+                prompt=prompt, reference_image_paths=reference_image_paths, size=size,
+            )
+
+        save_dir = Path(candidates_save_dir) if candidates_save_dir else Path(self.working_dir) / "image_candidates" / uuid4().hex
+        save_dir.mkdir(parents=True, exist_ok=True)
+        selection_path = save_dir / "selection.json"
+        references = []
+        for path, description in reference_image_path_and_text_pairs:
+            stat = os.stat(path)
+            references.append((path, description, stat.st_size, stat.st_mtime_ns))
+        fingerprint = hashlib.sha256(json.dumps({
+            "prompt": prompt, "size": size, "references": references,
+            "reference_image_paths": reference_image_paths, "target_description": target_description,
+            "generator": type(self.image_generator).__name__,
+            "model": str(getattr(self.image_generator, "model", "")),
+        }, sort_keys=True).encode()).hexdigest()
+        previous = {}
+        if selection_path.exists():
+            try:
+                previous = json.loads(selection_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pass
+        reuse = isinstance(previous, dict) and previous.get("request_fingerprint") == fingerprint
+        reusable_indices = {
+            item["index"] for item in previous.get("candidates", [])
+            if isinstance(item, dict) and item.get("status") == "ready" and "index" in item
+        } if reuse else set()
+        selection = {"request_fingerprint": fingerprint, "requested_candidates": count, "status": "generating", "candidates": []}
+
+        def save_selection():
+            temporary = selection_path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(selection, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(selection_path)
+
+        save_selection()
+        _emit_render_progress(progress, "image_candidates_start", f"Generating {count} image candidates", {"count": count})
+
+        async def generate_candidate(index):
+            path = save_dir / f"candidate_{index}.png"
+            record = {"index": index, "path": path.name, "status": "generating"}
+            selection["candidates"].append(record)
+            try:
+                if index in reusable_indices and path.is_file():
+                    record["reused"] = True
+                else:
+                    output = await self.image_generator.generate_single_image(
+                        prompt=prompt, reference_image_paths=reference_image_paths, size=size,
+                    )
+                    if output is None:
+                        raise RuntimeError("Image provider returned no image")
+                    await asyncio.to_thread(output.save, str(path))
+                with Image.open(path) as image:
+                    width, height = image.size
+                    output = ImageOutput(fmt="pil", ext="png", data=image.copy())
+                record.update(width=width, height=height)
+                if width <= height:
+                    raise ValueError("Candidate is not landscape")
+                record["status"] = "ready"
+                save_selection()
+                _emit_render_progress(progress, "image_candidate_done", f"Image candidate {index + 1}/{count} ready", {"index": index, "count": count})
+                return index, output, str(path)
+            except Exception as exc:
+                record.update(status="error", error_type=type(exc).__name__)
+                save_selection()
+                _emit_render_progress(progress, "image_candidate_failed", f"Image candidate {index + 1}/{count} failed", {"index": index, "error_type": type(exc).__name__})
+                raise
+
+        tasks = [asyncio.create_task(generate_candidate(index)) for index in range(count)]
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            cancelled = next((result for result in results if isinstance(result, asyncio.CancelledError)), None)
+            if cancelled is not None:
+                raise cancelled
+            valid = [result for result in results if not isinstance(result, Exception)]
+            if not valid:
+                selection["status"] = "generation_failed"
+                save_selection()
+                raise RuntimeError(f"All {count} image candidates failed: {results[0]}") from results[0]
+
+            if len(valid) == 1:
+                selected = valid[0]
+                reason = "Only one valid landscape candidate; VLM comparison skipped."
+                selection["selection_method"] = "single_valid_candidate"
+            else:
+                selection["status"] = "selecting"
+                save_selection()
+                _emit_render_progress(progress, "image_selection_start", f"VLM selecting from {len(valid)} candidates", {"count": len(valid)})
+                try:
+                    response = await self.best_image_selector.select(
+                        reference_image_path_and_text_pairs=reference_image_path_and_text_pairs,
+                        target_description=target_description,
+                        candidate_image_paths=[item[2] for item in valid],
+                    )
+                except Exception as exc:
+                    selection.update(status="selection_failed", error_type=type(exc).__name__)
+                    save_selection()
+                    raise
+                selected = valid[response.best_image_index]
+                reason = response.reason
+                selection["selection_method"] = "vlm"
+            selection.update(status="selected", selected_candidate_index=selected[0], reason=reason)
+            save_selection()
+            _emit_render_progress(progress, "image_selection_done", f"Selected image candidate {selected[0] + 1}", {"index": selected[0], "count": len(valid), "selection_method": selection["selection_method"]})
+            return selected[1]
+        except asyncio.CancelledError:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            selection["status"] = "cancelled"
+            save_selection()
+            raise
+
+
     async def generate_frame_for_single_shot(
         self,
         shot_idx: int,
@@ -573,10 +713,14 @@ class Script2VideoPipeline:
             prompt = f"{prefix_prompt}\n{prompt}"
             reference_image_paths = [item[0] for item in reference_image_path_and_text_pairs]
 
-            frame_image: ImageOutput = await self.image_generator.generate_single_image(
+            frame_image: ImageOutput = await self.generate_and_select_best_image(
                 prompt=prompt,
                 reference_image_paths=reference_image_paths,
+                reference_image_path_and_text_pairs=reference_image_path_and_text_pairs,
+                target_description=frame_desc,
                 size="1600x900",
+                candidates_save_dir=os.path.join(self.working_dir, "shots", str(shot_idx), f"{frame_type}_candidates"),
+                progress=_scoped_progress(progress, shot_idx=shot_idx, frame_type=frame_type),
             )
             frame_image.save(frame_image_path)
             print(f"☑️ Generated {frame_type} frame for shot {shot_idx}, saved to {frame_image_path}.")

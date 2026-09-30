@@ -15,6 +15,7 @@ from agent_runtime.config import (
     image_api_key,
     image_base_url,
     image_model,
+    image_num_candidates,
     llm_api_key,
     llm_base_url,
     llm_model,
@@ -99,6 +100,28 @@ class AgentConfigTests(unittest.TestCase):
         self.assertEqual(api_provider_from_base_url("https://openrouter.ai/api/v1"), "openrouter")
         self.assertEqual(api_provider_from_base_url("https://yunwu.ai/v1"), "yunwu")
         self.assertEqual(api_provider_from_base_url("https://example.com/v1"), "")
+
+    def test_image_candidates_default_and_environment_override(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(image_num_candidates(tmp), 2)
+            with patch.dict(os.environ, {"VIMAX_IMAGE_NUM_CANDIDATES": "1"}):
+                self.assertEqual(image_num_candidates(tmp), 1)
+
+    def test_image_candidates_use_workspace_config(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
+            config_dir = Path(tmp) / "configs"
+            config_dir.mkdir()
+            (config_dir / "agent.local.yaml").write_text("image_selection:\n  num_candidates: 3\n", encoding="utf-8")
+            self.assertEqual(image_num_candidates(tmp), 3)
+            with patch.dict(os.environ, {"VIMAX_IMAGE_NUM_CANDIDATES": "1"}):
+                self.assertEqual(image_num_candidates(tmp), 1)
+
+    def test_invalid_image_candidate_counts_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for value in ("0", "-1", "1.5", "abc", ""):
+                with self.subTest(value=value), patch.dict(os.environ, {"VIMAX_IMAGE_NUM_CANDIDATES": value}, clear=True):
+                    with self.assertRaisesRegex(ValueError, "positive integer"):
+                        image_num_candidates(tmp)
 
 
 if __name__ == "__main__":

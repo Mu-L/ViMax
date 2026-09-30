@@ -91,6 +91,7 @@ class TestResumeIncludesNewCameraReference(unittest.IsolatedAsyncioTestCase):
                 image_generator=MagicMock(),
                 video_generator=MagicMock(),
                 working_dir=tmp,
+                num_image_candidates=1,
             )
             shots = [_shot(0, cam_idx=0), _shot(1, cam_idx=1)]
             camera = Camera(
